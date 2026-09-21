@@ -1,6 +1,6 @@
 {
   "name": "blastdoor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A snapshot of your working tree taken the moment before a coding agent runs something destructive, and a way back.",
   "type": "module",
   "bin": {
