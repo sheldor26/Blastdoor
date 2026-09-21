@@ -10,10 +10,12 @@ updated: 2026-09-21
 
 ## Shipped
 
-- The hook: a `PreToolUse` handler on `Bash` that matches the command against a
-  trigger list and commits the whole working tree — uncommitted and untracked
-  included — to a ref under `refs/blastdoor`, then reports the snapshot id back
-  to the session as JSON. Every path in it exits 0.
+- The hook: a `PreToolUse` handler on `Bash|Write|Edit|MultiEdit` that commits
+  the whole working tree — uncommitted and untracked included — to a ref under
+  `refs/blastdoor` before the call runs, then reports the snapshot id back to
+  the session as JSON. `Bash` commands are matched against a trigger list;
+  `Write`, `Edit` and `MultiEdit` snapshot unconditionally, since the overwrite
+  itself is the risk, not a specific command shape. Every path in it exits 0.
 - Snapshots taken with a throwaway index, so the user's index, working tree,
   branch and HEAD are never touched, and with a forced git identity, so a
   repository with no configured user still works.
@@ -23,11 +25,18 @@ updated: 2026-09-21
 - `install` resolves a concrete command, writes it into `.claude/settings.json`
   keeping everything it does not own, then runs it and refuses to say "armed"
   if it did not work.
+- `install --target codex` writes the same hook (matcher `Bash|apply_patch`,
+  since Codex reports every file edit as `apply_patch`) to the user-level
+  `~/.codex/hooks.json` — protects every repo opened with Codex, not just one.
+  Codex requires every hook to be reviewed and trusted by hand in its own
+  `/hooks` TUI, with no non-interactive way to pre-approve one, so install
+  cannot say "armed" here the way it does for Claude Code (D-0008) — it says
+  what is written and what step is still missing.
 - `list`, `diff`, `snapshot`, `restore`, `restore --into`, `prune`,
-  `uninstall`.
+  `uninstall` (both take `--target codex`).
 - Restore snapshots the state it is replacing and never deletes a file.
-- 31 assertions in `test/smoke.mjs`, in throwaway git repositories, driving the
-  hook with real payload shapes.
+- 44 assertions in `test/smoke.mjs`, in throwaway git repositories, driving the
+  hook with real payload shapes for both harnesses.
 
 ## In flight
 
@@ -40,9 +49,9 @@ updated: 2026-09-21
 2. Use it for a week on real sessions before telling anyone it works. The only
    evidence it fires correctly today is a test suite written by the same person
    who wrote the triggers.
-3. Decide whether `Write` and `Edit` should trigger a snapshot too. An agent
-   overwriting a file it misread is the more common disaster, and it is not
-   covered.
+3. Re-check the Codex integration against a newer CLI version before
+   publishing — checked against 0.153.4 only (D-0008), and hook trust UX is
+   the kind of thing that could grow a non-interactive path.
 
 ## Known rough edges
 

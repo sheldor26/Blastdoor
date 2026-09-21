@@ -9,6 +9,79 @@
 > Add entries with: `node .bitacora/cli.mjs new decision "Title" --tags area`
 
 <!-- bitacora:entry
+id: D-0008
+date: 2026-09-21
+tags: [hook, codex, scope]
+-->
+### Codex CLI support writes the hook but cannot verify it is armed
+
+**Context.** Codex CLI has its own `PreToolUse` hooks, in the same `{ hooks: { PreToolUse:
+[...] } }` shape Claude Code uses, confirmed by reading its binary's embedded
+schema strings and by two independent write-ups (agenticcontrolplane.com,
+learn.chatgpt.com). But every hook there needs to be reviewed and trusted by
+hand, once, inside Codex's own `/hooks` TUI — there is no flag or config
+setting that pre-approves one; `--dangerously-bypass-hook-trust` exists but is
+per-invocation and explicitly named dangerous. Verified directly: a hook
+written to `hooks.json` and never trusted was silently skipped by a real
+`codex exec` run — the file-write tool call it should have snapshotted
+completed with no snapshot taken and no error shown. D-0006 established that
+`install` only claims "armed" after proving the hook runs; that proof does not
+exist for Codex and cannot be manufactured without either a real TUI session
+or the dangerous bypass flag, which `install` has no business reaching for
+on someone's behalf.
+
+**Decision.** `blastdoor install --target codex` writes the hook to `~/.codex/hooks.json` —
+user-level, not a repo-level file, because Codex has no equivalent of
+`$CLAUDE_PROJECT_DIR` to make a relative command portable, and an absolute
+path is personal configuration (M-0001). It still verifies the command itself
+runs. But it never prints "Armed." — it says plainly that Codex will skip the
+hook silently until the user runs `/hooks` and trusts it themselves, and that
+until then nothing is blocked and nothing is snapshotted, with no signal
+either way.
+
+**Consequences.** This is honest about a gap `install` cannot close, at the cost of a worse
+first-run experience than Claude Code's — one manual step, undiscoverable
+without reading the install output. The upside of the user-level path: trusting
+it once protects every repository opened with Codex, not just the one `install`
+ran in. Unverified: whether Codex's hook-trust UX changes in a way that adds a
+non-interactive path (worth re-checking before publishing), and whether the
+`apply_patch` matcher and stdin payload shape hold across Codex CLI versions —
+this was checked on 0.153.4 only.
+
+<!-- bitacora:entry
+id: D-0007
+date: 2026-09-21
+tags: [hook, scope]
+-->
+### Snapshot Write, Edit and MultiEdit unconditionally, not by trigger match
+
+**Context.** The trigger list in `lib/triggers.mjs` exists because a shell command needs a
+pattern to tell a destructive one from an ordinary one. `Write`, `Edit` and
+`MultiEdit` carry no command string at all — the payload is a file path and new
+content. There was a real question whether `PreToolUse` even fires on these
+tools: anthropics/claude-code#91574 reads, on a first pass, like it does not.
+Reading the full thread and reproducing it directly (a throwaway repo, a
+canary hook, a fresh `claude -p` session) showed the bug is narrower — a
+specific "deny" JSON shape gets silently ignored on some builds — and does not
+touch a hook that only takes a side effect and always exits 0, which is all
+blastdoor ever does.
+
+**Decision.** `Write`, `Edit` and `MultiEdit` snapshot on every call, unconditionally. There
+is no trigger to match because there is nothing to distinguish: any write can
+be the one that overwrites a file the agent misread, and the cost of a
+snapshot is a git object, not a blocked call. `Bash` keeps trigger matching —
+most Bash commands are not destructive, and matching still earns its keep
+there.
+
+**Consequences.** This makes the more common disaster (STATE.md: "an agent overwriting a file it
+misread") reversible, closing the gap `Next` item 3 used to name. It also
+means every edit in a session produces a ref under `refs/blastdoor`, not just
+the rare destructive one — `prune` matters more now than it did with `Bash`
+alone. Unverified: whether `PreToolUse` on `Write|Edit|MultiEdit` is reliable
+across Claude Code versions and platforms beyond the one build this was tested
+on (STATE.md "Next" item 2 — a week of real sessions — covers this too).
+
+<!-- bitacora:entry
 id: D-0006
 date: 2026-09-21
 tags: [design]

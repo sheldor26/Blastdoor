@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } fr
 import { execSync } from 'node:child_process';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
 import * as G from '../lib/git.mjs';
 import { match } from '../lib/triggers.mjs';
@@ -59,10 +60,16 @@ const ago = (date) => {
 
 // ------------------------------------------------------------------ hook
 
+// Write, Edit, MultiEdit (Claude Code) and apply_patch (Codex) have no shell
+// command to match a trigger against — the overwrite itself is the risk
+// (STATE.md: "an agent overwriting a file it misread is the more common
+// disaster"), so every call snapshots first.
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'apply_patch']);
+
 /**
- * Invoked by Claude Code before a Bash tool call. Reads the hook payload on
- * stdin and always exits 0: a safety net that can fail someone's command is
- * not a safety net (DECISIONS.md D-0002).
+ * Invoked before a Bash, Write, Edit, MultiEdit or apply_patch tool call.
+ * Reads the hook payload on stdin and always exits 0: a safety net that can
+ * fail someone's command is not a safety net (DECISIONS.md D-0002).
  */
 async function hook() {
   let raw = '';
@@ -74,7 +81,12 @@ async function hook() {
     if (!root) return;
 
     const config = loadConfig(root);
-    const hit = match(payload.tool_input && payload.tool_input.command, config.triggers);
+    const toolName = payload.tool_name;
+    const hit = toolName === 'Bash'
+      ? match(payload.tool_input && payload.tool_input.command, config.triggers)
+      : WRITE_TOOLS.has(toolName)
+        ? { name: toolName, clause: (payload.tool_input && payload.tool_input.file_path) || '' }
+        : null;
     if (!hit) return;
 
     const result = G.snapshot(root, {
@@ -133,6 +145,13 @@ function verify(command, root) {
 }
 
 function doInstall() {
+  const target = opt('target', 'claude');
+  if (target === 'codex') return doInstallCodex();
+  if (target !== 'claude') {
+    console.error(`${red('!')} unknown --target ${target} — use claude or codex`);
+    process.exit(1);
+  }
+
   const root = requireRepo();
   const resolved = resolveCommand(root);
   // A command only belongs in the shared settings file when it will work for
@@ -193,7 +212,63 @@ function doInstall() {
   console.log('');
 }
 
+/**
+ * Codex requires every hook to be reviewed and trusted by hand, in its own
+ * TUI, before it runs — there is no flag or config setting that pre-approves
+ * one (DECISIONS.md). `install` cannot verify this the way it does for Claude
+ * Code, so it does not claim to: it writes the hook and says plainly what is
+ * still missing.
+ *
+ * The hook goes to `~/.codex/hooks.json`, not a repo-level one. Codex has no
+ * equivalent of `$CLAUDE_PROJECT_DIR`, so a relative, portable command is not
+ * possible here (M-0001) — an absolute path is personal configuration, and
+ * the user-level file is where that belongs. One install protects every repo
+ * opened with Codex, not just this one.
+ */
+function doInstallCodex() {
+  const self = join(HERE, 'blastdoor.mjs');
+  const command = `"${process.execPath}" "${self}" hook`;
+  const path = join(homedir(), '.codex', 'hooks.json');
+  const r = settings.install(path, command, settings.CODEX_MATCHER);
+  if (!r.ok) {
+    console.error(`${red('!')} ${r.error}`);
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log(`${green('+')} ${path} ${dim(r.created ? 'created' : r.replaced ? 'blastdoor hook updated, everything else kept' : `blastdoor hook added, ${r.kept} other ${r.kept === 1 ? 'hook' : 'hooks'} kept`)}`);
+  console.log('');
+
+  if (!verify(command, CWD)) {
+    console.log(`${red('Not armed.')} The hook is written, but running it right now failed:`);
+    console.log(dim(`  ${command}`));
+    console.log('Install blastdoor into this project and run this again:');
+    console.log(b('  npm install --save-dev blastdoor && npx blastdoor install --target codex'));
+    console.log('');
+    process.exit(1);
+  }
+
+  console.log(`${yellow('Written, but not armed yet.')} Codex will not run a hook it has not reviewed —`);
+  console.log('that review has to happen in Codex itself, once:');
+  console.log('');
+  console.log(b('  codex'));
+  console.log(dim('  then run /hooks, find blastdoor, and trust it'));
+  console.log('');
+  console.log('Until you do, Codex skips the hook silently: nothing is blocked, but nothing');
+  console.log('is snapshotted either, and nothing tells you that. This protects every repo');
+  console.log('you open with Codex, not just this one, so it only needs doing once.');
+  console.log('');
+}
+
 function doUninstall() {
+  const target = opt('target', 'claude');
+  if (target === 'codex') {
+    const path = join(homedir(), '.codex', 'hooks.json');
+    const removed = existsSync(path) ? settings.uninstall(path).removed : 0;
+    console.log(removed ? `${green('-')} hook removed. Snapshots already taken are still there.` : 'no blastdoor hook was installed');
+    return;
+  }
+
   const root = requireRepo();
   let removed = 0;
   for (const name of ['settings.json', 'settings.local.json']) {
@@ -304,7 +379,10 @@ function doPrune() {
 function help() {
   console.log(`blastdoor — the working tree, saved the moment before an agent destroys it
 
-  npx blastdoor install          arm the hook in this repository
+  npx blastdoor install          arm the hook in this repository, for Claude Code
+  npx blastdoor install --target codex
+                                 write the hook for Codex CLI — still needs
+                                 trusting once, inside Codex itself (see output)
   npx blastdoor list             every snapshot, newest first
   npx blastdoor diff [id]        what changed since a snapshot
   npx blastdoor restore <id>     put those file contents back
@@ -313,6 +391,7 @@ function help() {
   npx blastdoor snapshot         take one by hand
   npx blastdoor prune --keep 50  drop the oldest
   npx blastdoor uninstall        remove the hook, keep the snapshots
+  npx blastdoor uninstall --target codex
 
 A snapshot is a git commit on a ref under refs/blastdoor. It is not on your
 branch, it does not move HEAD, and it never touches your index or working

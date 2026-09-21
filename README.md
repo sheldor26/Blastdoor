@@ -96,7 +96,10 @@ Each clause of a compound command is tested on its own, so
 ## Commands
 
 ```
-npx blastdoor install          arm the hook in this repository
+npx blastdoor install          arm the hook in this repository, for Claude Code
+npx blastdoor install --target codex
+                               write the hook for Codex CLI (see below — one
+                               extra step, inside Codex itself)
 npx blastdoor list             every snapshot, newest first
 npx blastdoor diff [id]        what changed since a snapshot
 npx blastdoor restore <id>     put those file contents back
@@ -120,6 +123,23 @@ are not surfaced, so the repository looks armed while nothing is being saved.
 That is the exact failure this tool exists to prevent, so `install` resolves a
 concrete path, writes it, runs it, and prints **Not armed** with the reason if
 it did not work.
+
+## Codex CLI
+
+`npx blastdoor install --target codex` writes the hook to the user-level
+`~/.codex/hooks.json` — one install protects every repository you open with
+Codex, not just the one you ran it in. Codex requires every hook to be
+reviewed and trusted by hand before it runs anything, and there is no flag or
+setting that pre-approves one, so there is one extra step:
+
+```
+codex
+```
+
+then `/hooks`, find blastdoor, and trust it. Until that happens Codex skips
+the hook silently — nothing is blocked, but nothing is snapshotted either, and
+nothing says so. `install` cannot verify this step the way it does for Claude
+Code, so it does not claim to; it tells you plainly that it is still missing.
 
 ## Requirements
 

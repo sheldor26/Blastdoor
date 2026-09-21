@@ -24,8 +24,8 @@ const git = (cwd, ...args) => execFileSync('git', args, {
   env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
 }).trim();
 
-const cli = (cwd, args, input) => {
-  const r = execFileSync(process.execPath, [BIN, ...args], { cwd, input, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
+const cli = (cwd, args, input, env) => {
+  const r = execFileSync(process.execPath, [BIN, ...args], { cwd, input, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', ...env } });
   return r;
 };
 
@@ -44,6 +44,11 @@ function repo() {
 const payload = (cwd, command) => JSON.stringify({
   hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd, session_id: 's1',
   tool_input: { command },
+});
+
+const writePayload = (cwd, toolName, filePath) => JSON.stringify({
+  hook_event_name: 'PreToolUse', tool_name: toolName, cwd, session_id: 's1',
+  tool_input: { file_path: filePath },
 });
 
 // --- triggers --------------------------------------------------------------
@@ -86,6 +91,61 @@ ok('an extra trigger from config is honoured', Boolean(match('dropdb app', ['dro
   cli(dir, ['hook'], payload(dir, 'rm -rf other'));
   const count = git(dir, 'for-each-ref', 'refs/blastdoor').split('\n').filter(Boolean).length;
   ok('an identical tree is not snapshotted twice', count === 1);
+}
+
+// --- Write, Edit, MultiEdit snapshot unconditionally ------------------------
+
+{
+  const dir = repo();
+  writeFileSync(join(dir, 'keep.txt'), 'about to be overwritten\n');
+
+  const out = cli(dir, ['hook'], writePayload(dir, 'Write', join(dir, 'keep.txt')));
+  ok('a Write call produces a snapshot', out.trim().startsWith('{') && JSON.parse(out).systemMessage.includes('blastdoor'));
+
+  const refs = git(dir, 'for-each-ref', '--format=%(refname)', 'refs/blastdoor');
+  ok('the snapshot is on a blastdoor ref', refs.includes('refs/blastdoor/'));
+  const id = refs.split('/').pop();
+  ok('the snapshot holds the pre-write content', git(dir, 'show', `refs/blastdoor/${id}:keep.txt`) === 'about to be overwritten');
+
+  writeFileSync(join(dir, 'keep.txt'), 'overwritten\n');
+  const editOut = cli(dir, ['hook'], writePayload(dir, 'Edit', join(dir, 'keep.txt')));
+  ok('an Edit call produces a snapshot too', JSON.parse(editOut).systemMessage.includes('blastdoor'));
+
+  writeFileSync(join(dir, 'keep.txt'), 'edited again\n');
+  const multiOut = cli(dir, ['hook'], writePayload(dir, 'MultiEdit', join(dir, 'keep.txt')));
+  ok('a MultiEdit call produces a snapshot too', JSON.parse(multiOut).systemMessage.includes('blastdoor'));
+
+  const readOut = cli(dir, ['hook'], writePayload(dir, 'Read', join(dir, 'keep.txt')));
+  ok('a Read call writes nothing and takes no snapshot', readOut.trim() === '');
+
+  const patchOut = cli(dir, ['hook'], writePayload(dir, 'apply_patch', join(dir, 'keep.txt')));
+  ok('Codex apply_patch produces a snapshot too', JSON.parse(patchOut).systemMessage.includes('blastdoor'));
+}
+
+// --- install --target codex -------------------------------------------------
+
+{
+  const dir = repo();
+  const home = mkdtempSync(join(tmpdir(), 'blastdoor-home-'));
+  temps.push(home);
+  const env = { HOME: home };
+
+  const out = cli(dir, ['install', '--target', 'codex'], undefined, env);
+  ok('install --target codex says it still needs trusting', out.includes('not armed yet') && out.includes('/hooks'));
+
+  const codexPath = join(home, '.codex', 'hooks.json');
+  ok('the hook goes to the user-level Codex hooks file', existsSync(codexPath));
+  const written = JSON.parse(readFileSync(codexPath, 'utf8'));
+  const group = written.hooks.PreToolUse.find((g) => JSON.stringify(g).includes('blastdoor'));
+  ok('the Codex matcher covers Bash and apply_patch', group.matcher === 'Bash|apply_patch');
+
+  cli(dir, ['install', '--target', 'codex'], undefined, env);
+  const twice = JSON.parse(readFileSync(codexPath, 'utf8'));
+  ok('installing twice does not duplicate the Codex hook', twice.hooks.PreToolUse.filter((g) => JSON.stringify(g).includes('blastdoor')).length === 1);
+
+  cli(dir, ['uninstall', '--target', 'codex'], undefined, env);
+  const gone = JSON.parse(readFileSync(codexPath, 'utf8'));
+  ok('uninstall --target codex removes its hook', !JSON.stringify(gone).includes('blastdoor'));
 }
 
 // --- the hook never blocks -------------------------------------------------
