@@ -10,12 +10,15 @@ updated: 2026-09-21
 
 ## Shipped
 
-- The hook: a `PreToolUse` handler on `Bash|Write|Edit|MultiEdit` that commits
-  the whole working tree — uncommitted and untracked included — to a ref under
-  `refs/blastdoor` before the call runs, then reports the snapshot id back to
-  the session as JSON. `Bash` commands are matched against a trigger list;
-  `Write`, `Edit` and `MultiEdit` snapshot unconditionally, since the overwrite
-  itself is the risk, not a specific command shape. Every path in it exits 0.
+- The hook: a `PreToolUse` handler on `Bash|Write|Edit|MultiEdit|NotebookEdit`
+  that commits the whole working tree — uncommitted and untracked included —
+  to a ref under `refs/blastdoor` before the call runs, then reports the
+  snapshot id back to the session as JSON. `Bash` commands are matched against
+  a trigger list; the rest snapshot unconditionally, since the overwrite
+  itself is the risk, not a specific command shape. `WRITE_TOOLS` (which tool
+  names snapshot unconditionally) is derived from the matcher strings
+  themselves, not hand-duplicated (M-0002) — a matcher change can't silently
+  stop matching what the hook actually acts on. Every path in it exits 0.
 - Snapshots taken with a throwaway index, so the user's index, working tree,
   branch and HEAD are never touched, and with a forced git identity, so a
   repository with no configured user still works.
@@ -35,7 +38,11 @@ updated: 2026-09-21
 - `list`, `diff`, `snapshot`, `restore`, `restore --into`, `prune`,
   `uninstall` (both take `--target codex`).
 - Restore snapshots the state it is replacing and never deletes a file.
-- 44 assertions in `test/smoke.mjs`, in throwaway git repositories, driving the
+- `snapshot()`'s throwaway index directory is cleaned up in a `finally` after
+  every call, not just on the happy path — it was leaking one empty temp
+  directory per snapshot before, now most edits in a session rather than only
+  the rare destructive Bash command.
+- 48 assertions in `test/smoke.mjs`, in throwaway git repositories, driving the
   hook with real payload shapes for both harnesses.
 
 ## In flight
@@ -52,6 +59,19 @@ updated: 2026-09-21
 3. Re-check the Codex integration against a newer CLI version before
    publishing — checked against 0.153.4 only (D-0008), and hook trust UX is
    the kind of thing that could grow a non-interactive path.
+4. Verify Codex actually reports `tool_name: "Bash"` for shell commands, the
+   way `CODEX_MATCHER` assumes — confirmed for `apply_patch` (file edits) by a
+   real `codex exec` run, never confirmed for the shell tool itself. An
+   attempt to check this hung indefinitely and was killed rather than
+   diagnosed. If it's wrong, Bash trigger matching silently never fires under
+   Codex even after the hook is trusted.
+5. A user who installed before this session's Write/Edit/MultiEdit/apply_patch
+   change has `"matcher": "Bash"` sitting in their `.claude/settings.json` or
+   `~/.codex/hooks.json` — the new hook code in the npm package covers the
+   other tools, but nothing re-runs `install` for them automatically. They
+   believe they're covered (README/STATE now say so) and are not, until they
+   reinstall. Worth a version check or a nudge in the package's postinstall,
+   not solved by this session.
 
 ## Known rough edges
 

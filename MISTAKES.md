@@ -7,6 +7,40 @@
 >
 > Add entries with: `node .bitacora/cli.mjs new mistake "Title" --tags area,failure-mode`
 <!-- bitacora:entry
+id: M-0002
+date: 2026-09-21
+tags: [hook, regex, coverage]
+severity: medium
+-->
+### Unanchored matcher regex silently missed NotebookEdit while still firing the hook
+
+**What happened.** `CLAUDE_MATCHER` was `'Bash|Write|Edit|MultiEdit'`. Claude Code tests a hook's
+matcher as an unanchored regex against the tool name, so `'Edit'` also matches
+inside `'NotebookEdit'` — the hook fired on every notebook edit, spawning a
+process for nothing, because `WRITE_TOOLS` (a separately hand-written `Set` in
+`bin/blastdoor.mjs`) did not include `'NotebookEdit'` and produced no hit. The
+exact disaster D-0007 says this diff closes — an agent overwriting a file it
+misread — was left uncovered for notebooks, with no signal anything was wrong.
+Caught by a code-review pass across 8 independent finder angles, not by the 44
+tests already in place, none of which exercised a tool name Claude Code itself
+treats as distinct.
+
+**Root cause.** Two facts about "which tool names blastdoor snapshots for" were kept in two
+places that don't check each other: the regex string in `lib/settings.mjs`
+(what makes the hook fire) and the `Set` in `bin/blastdoor.mjs` (what the hook
+does once fired). Widening one without the other produces exactly this gap,
+and nothing short of reading Claude Code's own matching semantics would have
+surfaced it — a plain string-equality mental model of "matcher" hides that it
+is actually `RegExp.prototype.test()`.
+
+**Guardrail.** `WRITE_TOOLS` in `bin/blastdoor.mjs` is now derived from `CLAUDE_MATCHER` and
+`CODEX_MATCHER` themselves (`matcher.split('|')`) instead of hand-listed, so
+the two can no longer drift — extending a matcher automatically extends what
+the hook acts on. `NotebookEdit` was added to `CLAUDE_MATCHER` explicitly
+rather than left to accidental substring matching. A test asserts a
+`NotebookEdit` payload produces a snapshot.
+
+<!-- bitacora:entry
 id: M-0001
 date: 2026-09-21
 tags: [install, portability]

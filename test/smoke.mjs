@@ -6,7 +6,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -120,6 +120,28 @@ ok('an extra trigger from config is honoured', Boolean(match('dropdb app', ['dro
 
   const patchOut = cli(dir, ['hook'], writePayload(dir, 'apply_patch', join(dir, 'keep.txt')));
   ok('Codex apply_patch produces a snapshot too', JSON.parse(patchOut).systemMessage.includes('blastdoor'));
+
+  writeFileSync(join(dir, 'nb.ipynb'), '{"cells": []}\n');
+  const notebookOut = cli(dir, ['hook'], writePayload(dir, 'NotebookEdit', join(dir, 'nb.ipynb')));
+  ok('NotebookEdit produces a snapshot too, not just a wasted hook run', JSON.parse(notebookOut).systemMessage.includes('blastdoor'));
+
+  const beforeTemp = readdirSync(tmpdir()).filter((f) => f.startsWith('blastdoor-')).length;
+  cli(dir, ['hook'], writePayload(dir, 'Write', join(dir, 'keep.txt')));
+  const afterTemp = readdirSync(tmpdir()).filter((f) => f.startsWith('blastdoor-')).length;
+  ok('snapshot does not leak its throwaway index directory', afterTemp === beforeTemp);
+}
+
+// --- --target validation ----------------------------------------------------
+
+{
+  const dir = repo();
+  let threw = false;
+  try { cli(dir, ['install', '--target', 'bogus']); } catch { threw = true; }
+  ok('install rejects an unrecognised --target', threw);
+
+  threw = false;
+  try { cli(dir, ['uninstall', '--target', 'bogus']); } catch { threw = true; }
+  ok('uninstall rejects an unrecognised --target the same way install does', threw);
 }
 
 // --- install --target codex -------------------------------------------------

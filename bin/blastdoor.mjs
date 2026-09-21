@@ -60,16 +60,21 @@ const ago = (date) => {
 
 // ------------------------------------------------------------------ hook
 
-// Write, Edit, MultiEdit (Claude Code) and apply_patch (Codex) have no shell
-// command to match a trigger against — the overwrite itself is the risk
+// Every non-Bash tool name either matcher covers — Write, Edit, MultiEdit,
+// NotebookEdit (Claude Code) and apply_patch (Codex) — has no shell command
+// to match a trigger against, and the overwrite itself is the risk
 // (STATE.md: "an agent overwriting a file it misread is the more common
-// disaster"), so every call snapshots first.
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'apply_patch']);
+// disaster"), so every call snapshots first. Derived from the matchers
+// themselves so this set can't drift from what the installed hook actually
+// fires on.
+const WRITE_TOOLS = new Set(
+  [...settings.CLAUDE_MATCHER.split('|'), ...settings.CODEX_MATCHER.split('|')].filter((t) => t !== 'Bash'),
+);
 
 /**
- * Invoked before a Bash, Write, Edit, MultiEdit or apply_patch tool call.
- * Reads the hook payload on stdin and always exits 0: a safety net that can
- * fail someone's command is not a safety net (DECISIONS.md D-0002).
+ * Invoked before a Bash, Write, Edit, MultiEdit, NotebookEdit or apply_patch
+ * tool call. Reads the hook payload on stdin and always exits 0: a safety net
+ * that can fail someone's command is not a safety net (DECISIONS.md D-0002).
  */
 async function hook() {
   let raw = '';
@@ -85,7 +90,7 @@ async function hook() {
     const hit = toolName === 'Bash'
       ? match(payload.tool_input && payload.tool_input.command, config.triggers)
       : WRITE_TOOLS.has(toolName)
-        ? { name: toolName, clause: (payload.tool_input && payload.tool_input.file_path) || '' }
+        ? { name: toolName, clause: String((payload.tool_input && payload.tool_input.file_path) || '') }
         : null;
     if (!hit) return;
 
@@ -144,13 +149,46 @@ function verify(command, root) {
   }
 }
 
-function doInstall() {
+/**
+ * `--target` is validated in one place so `install` and `uninstall` reject the
+ * same typos the same way — nothing but a silent fallback to the Claude path
+ * used to happen on `uninstall --target codexx`.
+ */
+function resolveTarget() {
   const target = opt('target', 'claude');
-  if (target === 'codex') return doInstallCodex();
-  if (target !== 'claude') {
+  if (target !== 'claude' && target !== 'codex') {
     console.error(`${red('!')} unknown --target ${target} — use claude or codex`);
     process.exit(1);
   }
+  return target;
+}
+
+/** The "created / replaced / kept N" note, from what `settings.install` reports. */
+function describeInstall(r) {
+  return r.created
+    ? 'created'
+    : r.replaced
+      ? 'blastdoor hook updated, everything else kept'
+      : `blastdoor hook added, ${r.kept} other PreToolUse ${r.kept === 1 ? 'hook' : 'hooks'} kept`;
+}
+
+function printInstalled(displayPath, r) {
+  console.log('');
+  console.log(`${green('+')} ${displayPath} ${dim(describeInstall(r))}`);
+  console.log('');
+}
+
+/** `adviceLines` differ per target because the fix for a failed `verify()` differs. */
+function printNotArmed(command, adviceLines) {
+  console.log(`${red('Not armed.')} The hook is written, but running it right now failed:`);
+  console.log(dim(`  ${command}`));
+  for (const line of adviceLines) console.log(line);
+  console.log('');
+  process.exit(1);
+}
+
+function doInstall() {
+  if (resolveTarget() === 'codex') return doInstallCodex();
 
   const root = requireRepo();
   const resolved = resolveCommand(root);
@@ -165,24 +203,14 @@ function doInstall() {
     process.exit(1);
   }
 
-  const note = r.created
-    ? 'created'
-    : r.replaced
-      ? 'blastdoor hook updated, everything else kept'
-      : `blastdoor hook added, ${r.kept} other PreToolUse ${r.kept === 1 ? 'hook' : 'hooks'} kept`;
-
-  console.log('');
-  console.log(`${green('+')} ${relative(root, path) || path} ${dim(note)}`);
-  console.log('');
+  printInstalled(relative(root, path) || path, r);
 
   if (!verify(resolved.command, root)) {
-    console.log(`${red('Not armed.')} The hook is written, but running it right now failed:`);
-    console.log(dim(`  ${resolved.command}`));
-    console.log('A hook pointing at something that will not run is worse than no hook — it');
-    console.log('looks armed. Install blastdoor into the project and run this again:');
-    console.log(b('  npm install --save-dev blastdoor && npx blastdoor install'));
-    console.log('');
-    process.exit(1);
+    printNotArmed(resolved.command, [
+      'A hook pointing at something that will not run is worse than no hook — it',
+      'looks armed. Install blastdoor into the project and run this again:',
+      b('  npm install --save-dev blastdoor && npx blastdoor install'),
+    ]);
   }
 
   if (!shared) {
@@ -226,6 +254,10 @@ function doInstall() {
  * opened with Codex, not just this one.
  */
 function doInstallCodex() {
+  // Not resolveCommand(root): its 'local' branch writes a $CLAUDE_PROJECT_DIR
+  // reference that only Claude Code sets, and this hook has no project root
+  // to prefer a local install against anyway — the file it writes to is
+  // ~/.codex/hooks.json, not anything under this repo.
   const self = join(HERE, 'blastdoor.mjs');
   const command = `"${process.execPath}" "${self}" hook`;
   const path = join(homedir(), '.codex', 'hooks.json');
@@ -235,17 +267,18 @@ function doInstallCodex() {
     process.exit(1);
   }
 
-  console.log('');
-  console.log(`${green('+')} ${path} ${dim(r.created ? 'created' : r.replaced ? 'blastdoor hook updated, everything else kept' : `blastdoor hook added, ${r.kept} other ${r.kept === 1 ? 'hook' : 'hooks'} kept`)}`);
-  console.log('');
+  printInstalled(path, r);
 
   if (!verify(command, CWD)) {
-    console.log(`${red('Not armed.')} The hook is written, but running it right now failed:`);
-    console.log(dim(`  ${command}`));
-    console.log('Install blastdoor into this project and run this again:');
-    console.log(b('  npm install --save-dev blastdoor && npx blastdoor install --target codex'));
-    console.log('');
-    process.exit(1);
+    // Unlike the Claude Code path, this command is never a project-relative
+    // node_modules path — it's always this exact script's own absolute path,
+    // so "install blastdoor as a dependency and retry" cannot change the
+    // outcome. Only Node or this file being broken can make verify() fail.
+    printNotArmed(command, [
+      'That command is this script\'s own path — Node has to be able to run it as-is.',
+      `Confirm ${process.execPath} works and that the file above still exists, then`,
+      'run this again.',
+    ]);
   }
 
   console.log(`${yellow('Written, but not armed yet.')} Codex will not run a hook it has not reviewed —`);
@@ -261,19 +294,16 @@ function doInstallCodex() {
 }
 
 function doUninstall() {
-  const target = opt('target', 'claude');
-  if (target === 'codex') {
-    const path = join(homedir(), '.codex', 'hooks.json');
-    const removed = existsSync(path) ? settings.uninstall(path).removed : 0;
-    console.log(removed ? `${green('-')} hook removed. Snapshots already taken are still there.` : 'no blastdoor hook was installed');
-    return;
-  }
-
-  const root = requireRepo();
   let removed = 0;
-  for (const name of ['settings.json', 'settings.local.json']) {
-    const path = join(root, '.claude', name);
+  if (resolveTarget() === 'codex') {
+    const path = join(homedir(), '.codex', 'hooks.json');
     if (existsSync(path)) removed += settings.uninstall(path).removed;
+  } else {
+    const root = requireRepo();
+    for (const name of ['settings.json', 'settings.local.json']) {
+      const path = join(root, '.claude', name);
+      if (existsSync(path)) removed += settings.uninstall(path).removed;
+    }
   }
   console.log(removed ? `${green('-')} hook removed. Snapshots already taken are still there.` : 'no blastdoor hook was installed');
 }
