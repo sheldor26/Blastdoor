@@ -69,6 +69,10 @@ To remove every trace: `git for-each-ref --format='%(refname)' refs/blastdoor | 
   `.env` above all. Name those paths under `forceInclude` in
   `blastdoor.config.json` if you want them captured, knowing they end up in git
   objects.
+- **Uncommitted work inside a submodule.** A snapshot of the superproject
+  records at most which commit a submodule points at, not uncommitted changes
+  inside it, and `restore` does not recurse into one either. A destructive
+  command inside a submodule can be "snapshotted" and still be unrecoverable.
 - **Anything that is not the working tree.** A dropped table, a force-pushed
   branch, a deleted bucket. Those triggers are deliberately absent: a snapshot
   of your files restores none of them, and a net that fires where it cannot

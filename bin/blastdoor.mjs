@@ -6,7 +6,7 @@
  * Zero dependencies. The hook never blocks and never fails a tool call.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, lstatSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,7 +37,16 @@ const green = paint(32);
 const yellow = paint(33);
 const red = paint(31);
 
-const CWD = process.cwd();
+// process.cwd() throws ENOENT if the directory it would return no longer
+// exists — plausible here specifically, since a hook runs right before a
+// command that might delete directories. Computed at module load, before
+// hook()'s own try/catch exists, so an uncaught throw here would kill the
+// whole process and fail the tool call it was invoked for — the one thing
+// D-0002 says never happens (M-0004). payload.cwd, read once stdin arrives,
+// is what hook() actually uses; this is only the fallback for everything
+// else (requireRepo(), the error-log path).
+let CWD;
+try { CWD = process.cwd(); } catch { CWD = process.env.PWD || '.'; }
 
 function requireRepo() {
   const root = G.repoRoot(CWD);
@@ -114,8 +123,18 @@ async function hook() {
     try {
       const root = G.repoRoot(CWD);
       if (root) {
-        mkdirSync(join(root, '.blastdoor'), { recursive: true });
-        appendFileSync(join(root, '.blastdoor', 'errors.log'), `${new Date().toISOString()} ${err.stack}\n`);
+        const dotBlastdoor = join(root, '.blastdoor');
+        const log = join(dotBlastdoor, 'errors.log');
+        // A malicious repository could plant this path as a symlink, or plant
+        // .blastdoor itself as a symlinked directory — appendFileSync follows
+        // symlinks like every other fs write either way, so check both (same
+        // reasoning, and the same two-level check, as lib/settings.mjs's
+        // writesThroughSymlink).
+        const isSymlink = (p) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+        if (!isSymlink(log) && !isSymlink(dotBlastdoor)) {
+          mkdirSync(dotBlastdoor, { recursive: true });
+          appendFileSync(log, `${new Date().toISOString()} ${err.stack}\n`);
+        }
       }
     } catch { /* a logging failure must not fail the tool call either */ }
   }
@@ -130,19 +149,40 @@ async function hook() {
  * whatever is running right now. An npx cache path is accepted but reported,
  * because that directory is temporary and the hook dies with it.
  */
+// `"${path}"` only stays one shell token if `path` has no double quote,
+// backtick, `$` or backslash — any of those breaks out of the quotes when a
+// shell (execSync here, or Claude Code/Codex's own hook runner every time
+// the hook fires afterward) interprets the written command. Neither
+// process.execPath nor an npm install location is attacker-controlled in the
+// usual sense, but a pathological one — someone's own project cloned into a
+// directory named with one of these — would otherwise turn into standing
+// code execution baked into .claude/settings.json (M-0009). Refuse instead.
+const SHELL_UNSAFE = /["$`\\]/;
+const unsafePath = (...paths) => paths.find((p) => SHELL_UNSAFE.test(p));
+
 function resolveCommand(root) {
   const local = join(root, 'node_modules', '.bin', 'blastdoor');
   if (existsSync(local)) {
     return { command: '"$CLAUDE_PROJECT_DIR"/node_modules/.bin/blastdoor hook', kind: 'local' };
   }
   const self = join(HERE, 'blastdoor.mjs');
+  const bad = unsafePath(process.execPath, self);
+  if (bad) return { command: null, kind: 'unsafe-path', unsafe: bad };
   const command = `"${process.execPath}" "${self}" hook`;
   return { command, kind: /[\\/]_npx[\\/]/.test(self) ? 'npx-cache' : 'absolute' };
 }
 
-function verify(command, root) {
+// $CLAUDE_PROJECT_DIR in the 'local' command is set by Claude Code itself for
+// every hook it runs — never by a plain shell. Without it here, verify()
+// tries to run "/node_modules/.bin/blastdoor" (empty-string expansion) and
+// always fails, reporting "Not armed" for a hook that works fine inside
+// Claude Code (M-0005). Passing it in only for this check reproduces what
+// Claude Code actually provides at runtime, without writing it into the
+// command itself — a fixed value there would stop working the moment the
+// project moved.
+function verify(command, root, env = {}) {
   try {
-    execSync(`${command} < /dev/null`, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000 });
+    execSync(`${command} < /dev/null`, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, env: { ...process.env, ...env } });
     return true;
   } catch {
     return false;
@@ -192,6 +232,12 @@ function doInstall() {
 
   const root = requireRepo();
   const resolved = resolveCommand(root);
+  if (resolved.kind === 'unsafe-path') {
+    console.error(`${red('!')} ${resolved.unsafe} contains a character (", \`, $ or \\) that would`);
+    console.error('break out of the quotes the hook command is wrapped in. Move the install');
+    console.error('somewhere without one and try again — nothing was written.');
+    process.exit(1);
+  }
   // A command only belongs in the shared settings file when it will work for
   // everyone who clones the repository. An absolute path on this machine is
   // personal configuration, so it goes in the personal file (M-0001).
@@ -205,7 +251,7 @@ function doInstall() {
 
   printInstalled(relative(root, path) || path, r);
 
-  if (!verify(resolved.command, root)) {
+  if (!verify(resolved.command, root, resolved.kind === 'local' ? { CLAUDE_PROJECT_DIR: root } : {})) {
     printNotArmed(resolved.command, [
       'A hook pointing at something that will not run is worse than no hook — it',
       'looks armed. Install blastdoor into the project and run this again:',
@@ -259,6 +305,13 @@ function doInstallCodex() {
   // to prefer a local install against anyway — the file it writes to is
   // ~/.codex/hooks.json, not anything under this repo.
   const self = join(HERE, 'blastdoor.mjs');
+  const bad = unsafePath(process.execPath, self);
+  if (bad) {
+    console.error(`${red('!')} ${bad} contains a character (", \`, $ or \\) that would break out`);
+    console.error('of the quotes the hook command is wrapped in. Move the install somewhere');
+    console.error('without one and try again — nothing was written.');
+    process.exit(1);
+  }
   const command = `"${process.execPath}" "${self}" hook`;
   const path = join(homedir(), '.codex', 'hooks.json');
   const r = settings.install(path, command, settings.CODEX_MATCHER);
@@ -294,16 +347,23 @@ function doInstallCodex() {
 }
 
 function doUninstall() {
-  let removed = 0;
+  let paths;
   if (resolveTarget() === 'codex') {
-    const path = join(homedir(), '.codex', 'hooks.json');
-    if (existsSync(path)) removed += settings.uninstall(path).removed;
+    paths = [join(homedir(), '.codex', 'hooks.json')];
   } else {
     const root = requireRepo();
-    for (const name of ['settings.json', 'settings.local.json']) {
-      const path = join(root, '.claude', name);
-      if (existsSync(path)) removed += settings.uninstall(path).removed;
+    paths = ['settings.json', 'settings.local.json'].map((n) => join(root, '.claude', n));
+  }
+
+  let removed = 0;
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    const r = settings.uninstall(path);
+    if (!r.ok) {
+      console.error(`${red('!')} ${r.error}`);
+      process.exit(1);
     }
+    removed += r.removed;
   }
   console.log(removed ? `${green('-')} hook removed. Snapshots already taken are still there.` : 'no blastdoor hook was installed');
 }
@@ -367,15 +427,25 @@ function doRestore() {
     return;
   }
 
-  // Never restore without a way back from the restore itself.
+  // Never restore without a way back from the restore itself — and that
+  // means never restoring at all if this snapshot didn't actually happen
+  // (M-0006). The old code took this comment's promise and then ignored
+  // `before.ok`, running the destructive checkout regardless.
   const before = G.snapshot(root, { message: JSON.stringify({ reason: `before restoring ${snap.id}` }), forceInclude: loadConfig(root).forceInclude });
+  if (!before.ok) {
+    console.error(`${red('!')} could not snapshot the current state before restoring, so nothing was touched: ${before.error}`);
+    process.exit(1);
+  }
 
-  const out = G.tryGit(['checkout', snap.commit, '--', '.'], { cwd: root });
+  // See G.restoreWorktree's own comment for the two approaches tried before
+  // this one and what was wrong with each (M-0007) — in short: `checkout`
+  // stages what it touches, and its replacement, `git restore --worktree`,
+  // deletes files the snapshot doesn't know about instead of leaving them.
+  const out = G.restoreWorktree(root, snap.commit);
   if (!out.ok) return console.error(`${red('!')} ${out.error}`);
 
-  // `git checkout <commit> -- .` writes the snapshot's files over the working
-  // tree. It does not remove files that exist now and did not exist then, and
-  // this tool will not remove them either — it says which they are.
+  // It does not remove files that exist now and did not exist then, and this
+  // tool will not remove them either — it says which they are.
   const known = new Set(G.filesIn(root, snap.commit));
   const nowR = G.tryGit(['ls-files', '--others', '--cached', '--exclude-standard'], { cwd: root });
   const extra = (nowR.ok && nowR.out ? nowR.out.split('\n') : []).filter((f) => f && !known.has(f));
