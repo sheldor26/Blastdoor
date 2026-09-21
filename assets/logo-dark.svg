@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="blastdoor">
+  <rect x="14" y="14" width="92" height="92" rx="14" fill="none" stroke="#f4f4f5" stroke-width="4"/>
+  <line x1="60" y1="26" x2="60" y2="94" stroke="#f4f4f5" stroke-width="4"/>
+  <path d="M40 40 L48 46 L40 52" fill="none" stroke="#f4f4f5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M80 40 L72 46 L80 52" fill="none" stroke="#f4f4f5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="60" cy="76" r="7" fill="#f4f4f5"/>
+</svg>

@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo-light.svg" width="72" height="72" alt="blastdoor">
+</picture>
+
 # blastdoor
 
 An agent runs `git reset --hard` on two hours of uncommitted work. Or `rm -rf`
