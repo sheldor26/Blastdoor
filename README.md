@@ -5,6 +5,8 @@
 
 # blastdoor
 
+[![npm version](https://img.shields.io/npm/v/blastdoor.svg)](https://www.npmjs.com/package/blastdoor)
+
 An agent runs `git reset --hard` on two hours of uncommitted work. Or `rm -rf`
 with a variable that turned out to be empty. Or `git clean -fd` in the wrong
 directory. It happened to Amazon: a thirteen-hour outage when an agent deleted
