@@ -1,0 +1,36 @@
+{
+  "name": "blastdoor",
+  "version": "0.1.0",
+  "description": "A snapshot of your working tree taken the moment before a coding agent runs something destructive, and a way back.",
+  "type": "module",
+  "bin": {
+    "blastdoor": "bin/blastdoor.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sheldor26/blastdoor.git"
+  },
+  "keywords": [
+    "claude-code",
+    "agents",
+    "hooks",
+    "undo",
+    "snapshot",
+    "safety",
+    "git"
+  ],
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "logbook": "node .bitacora/cli.mjs"
+  }
+}
